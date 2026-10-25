@@ -682,16 +682,24 @@ pub fn claim_pending(claim: &Value) -> bool {
     if claim.get("error").and_then(Value::as_str).is_some_and(|text| !text.trim().is_empty()) {
         return false;
     }
+    // 首选**结构化标记**：提供 claim 的一侧直接说「这次没得领，但明天还有戏」。
+    // `providers::qoder::checkin::no_claim` 的两条中性分支与「缺 UMID 组件」都带它。
+    if claim.get("pending").and_then(Value::as_bool) == Some(true) {
+        return true;
+    }
     let message = claim.get("msg").and_then(Value::as_str).unwrap_or("");
-    // 两个地区的「无活动」文案都含这一句；实现改措辞时这里要跟着对齐
-    //（`providers::qoder::checkin::no_claim` 与 trae 的「未领取 + 原因」不同形，
-    // trae 不走这条 pending 逻辑 —— 它没有窗口概念）。
+    // 下面按文案兜底是给「不带 pending 的老结果 / 别家提供商」用的。文案是给人看的，
+    // 拿它当判据就注定会被改写文案的人踩坏 —— 新增中性态请打 `pending: true`，
+    // 不要往这张表里加字符串。（历史教训：国际版原话是「上游暂未给该账号**下发**
+    // 每日积分活动」，表里写的是「**未**下发每日积分活动」，差一个「未」字，
+    // 结果这条中性状态被判成 failed，前端一路染红，看起来就像「签到一直报错」。）
     // CodeArts 的两条（`providers::codearts::welfare::Outcome::label`）同理：
     // 「暂无可领取活动」是运营活动还没下发（再过一阵可能就有），「等待重试」是
     // 被本地那两道写闸挡住（今天还有额度、只是间隔没到）—— 两者都该让定时链
     // 稍后重试，而不是记成失败。改那边的文案时这两条也要跟着改。
     message.contains("没有可领取的签到活动")
         || message.contains("未下发每日积分活动")
+        || message.contains("下发每日积分活动")
         || message.contains("暂无可领取活动")
         || message.contains("等待重试")
 }
@@ -881,13 +889,63 @@ mod tests {
     //! 「放行了却仍判不出已完成」（面板不亮）或「判得出但先被丢成 Err」（`claim`
     //! 为 null）这两种半截修复。`closed_loop_tolerated_400_reaches_completed` 把
     //! 这条链整条钉住，是本次修复（上游 issue #137）唯一的端到端回归保护。
-    use super::checkin_completed_today;
+    use super::{checkin_completed_today, claim_pending};
     use crate::server::core::billing::request::BillingCall;
     use crate::server::core::billing::{is_duplicate_claim, normalize_daily_claim, BillingService};
     use serde_json::{json, Value};
 
     /// 上游真实的 400 文案（WorkBuddy 国内版当日已签到时的原话）。
     const REAL_DUPLICATE: &str = "今天已签到，请明天再来";
+
+    /// Qoder 国际版「此刻没有积分活动」的原话（`providers::qoder::checkin::no_claim`）。
+    /// 逐字钉在这里：这条文案曾经和 `claim_pending` 的兜底表差一个「未」字，
+    /// 于是中性状态被判成 failed、前端一路染红（用户看到的「签到一直报错」）。
+    const QODER_GLOBAL_NO_CAMPAIGN: &str = "上游暂未给该账号下发每日积分活动（官方活动窗口每天 10:00 开启，若今天已在 Qoder 客户端领过则活动行会消失）。明天 10 点后再试";
+
+    // ── claim_pending：中性态 vs 真失败 ──────────────────────────
+
+    #[test]
+    fn qoder_global_no_campaign_waits_instead_of_failing() {
+        // 结构化标记（新版后端发的东西）
+        assert!(claim_pending(&json!({
+            "success": false, "pending": true, "msg": QODER_GLOBAL_NO_CAMPAIGN
+        })));
+        // 老结果 / 别家提供商：文案兜底仍要认得出「今天没得领，明天还有戏」
+        assert!(claim_pending(&json!({"success": false, "msg": QODER_GLOBAL_NO_CAMPAIGN})));
+    }
+
+    #[test]
+    fn other_neutral_states_stay_pending() {
+        assert!(claim_pending(&json!({"success": false, "msg": "当前没有可领取的签到活动"})));
+        assert!(claim_pending(&json!({
+            "success": false,
+            "msg": "当前没有可领取的签到活动（上游未对该账号开放这一档）"
+        })));
+        assert!(claim_pending(&json!({"success": false, "msg": "暂无可领取活动"})));
+        assert!(claim_pending(&json!({"success": false, "msg": "等待重试"})));
+        assert!(claim_pending(&json!({
+            "success": false, "pending": true,
+            "msg": "未领取：本机没有 Qoder 客户端 / qodercli 的 UMID 组件。国际版签到需要本机安装"
+        })));
+    }
+
+    #[test]
+    fn real_failures_are_not_pending() {
+        // 执行出错（网络 / 凭证 / 5xx）：不是「等窗口」能解决的
+        assert!(!claim_pending(&json!({"success": false, "error": "connection reset", "msg": ""})));
+        assert!(!claim_pending(&json!({"success": false, "error": "   ", "msg": "HTTP 500"})));
+        // 上游账号级风控（WorkBuddy 11140）—— 换出口 IP 也救不回来，绝不能当「等窗口」
+        assert!(!claim_pending(&json!({
+            "success": false,
+            "msg": "request illegal — WorkBuddy restricted this account for unusual activity"
+        })));
+        // 真领到了 / 今天已领过：都不算 pending
+        assert!(!claim_pending(&json!({"success": true, "msg": "今日积分 +100"})));
+        assert!(!claim_pending(&json!({
+            "success": false, "alreadyCompleted": true, "pending": true, "msg": "今日已领取"
+        })));
+        assert!(!claim_pending(&json!({"success": false, "msg": REAL_DUPLICATE})));
+    }
 
     // ── 下游判据本身 ────────────────────────────────────────────
 

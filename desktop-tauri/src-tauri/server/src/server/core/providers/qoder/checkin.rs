@@ -314,11 +314,13 @@ fn no_claim(region: Region, claimed: bool, risk_note: Option<String>) -> Value {
         if let Some(note) = risk_note {
             return json!({
                 "success": false,
+                "pending": true,
                 "msg": format!("未领取：{note}。国际版签到需要本机安装 Qoder 客户端或 qodercli（Linux 可在签到中心一键安装组件）"),
             });
         }
         return json!({
             "success": false,
+            "pending": true,
             "msg": "上游暂未给该账号下发每日积分活动（官方活动窗口每天 10:00 开启，若今天已在 Qoder 客户端领过则活动行会消失）。明天 10 点后再试",
         });
     }
@@ -326,6 +328,7 @@ fn no_claim(region: Region, claimed: bool, risk_note: Option<String>) -> Value {
     // 明确说「没有可领的」而不是报错。
     json!({
         "success": false,
+        "pending": true,
         "msg": "当前没有可领取的签到活动",
     })
 }

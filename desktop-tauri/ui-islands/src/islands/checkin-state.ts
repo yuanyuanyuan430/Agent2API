@@ -672,7 +672,7 @@ export async function signSingleAccount(id: string, mode: 'checkin' | 'full' | '
       row = (await bridge().runCheckinActivity?.(id, mode)) ?? undefined
     }
     const claim = row?.claim as
-      | { success?: boolean; msg?: string; alreadyCompleted?: boolean }
+      | { success?: boolean; msg?: string; alreadyCompleted?: boolean; pending?: boolean }
       | undefined
     const activity = row?.activity as
       | {
@@ -696,7 +696,8 @@ export async function signSingleAccount(id: string, mode: 'checkin' | 'full' | '
     } else if (claim?.success === true) {
       toast(t('✅ {message}', { message: claim.msg || t('签到成功') }))
     } else if (claim?.alreadyCompleted === true) {
-      toast(claim?.msg || t('今日已领取'), 'err')
+      // 「今天已经领过了」是中性事实，不是失败 —— 染红会让人以为签到坏了
+      toast(claim?.msg || t('今日已领取'), 'warn')
     } else if (reportOk) {
       // 活跃上报成功（连登点亮）但没领到 —— 后端 msg 把「活动未开启」一并交代
       toast(t('✅ {message}', { message: claim?.msg || t('活跃上报完成，但活动未开启') }))
@@ -705,7 +706,8 @@ export async function signSingleAccount(id: string, mode: 'checkin' | 'full' | '
       // 「活动未开启」一并交代
       toast(t('✅ {message}', { message: claim?.msg || t('活跃保活完成，但活动未开启') }))
     } else {
-      toast(claim?.msg || t('未领取'), 'err')
+      // pending = 上游此刻没下发活动 / 还没到窗口：明天还有戏，不该按失败渲染
+      toast(claim?.msg || t('未领取'), claim?.pending === true ? 'warn' : 'err')
     }
     accountsView().wbAccountsView?.refreshUsageAfterCheckin?.(id)
   } catch (error) {

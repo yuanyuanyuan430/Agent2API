@@ -439,7 +439,7 @@ export type SharedWindow = {
   workbuddyDesktop?: AccountsBridge
   wbApp?: {
     esc?: (value: unknown) => string
-    toast?: (message: string, kind?: 'err' | 'ok') => void
+    toast?: (message: string, kind?: 'err' | 'ok' | 'warn') => void
     formatTime?: (value: unknown) => string
     showPage?: (page: string) => void
     refresh?: () => Promise<unknown> | unknown
@@ -526,7 +526,7 @@ export function shared(): SharedWindow {
 
 /* ─── 小工具（跨文件共用的三件：播报 / 转义 / 时间）───── */
 
-export function toast(message: string, kind?: 'err' | 'ok'): void {
+export function toast(message: string, kind?: 'err' | 'ok' | 'warn'): void {
   shared().wbApp?.toast?.(message, kind)
 }
 
